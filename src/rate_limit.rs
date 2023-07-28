@@ -61,9 +61,11 @@ where
       .expect("rate limit must be used in combination with the token auth middleware")
       .clone();
 
-    // TODO: add garbage collection for expired values to prevent leaking memory
+    // TODO: add garbage collection for expired values to prevent leaking memory.
     // A naive implementation of this garbage collection routine could be to spawn
     // a task that scans through the entries and remove all the entries where i.elapsed() > TTL.
+    // Another implementation to avoid scans could be to enqueue a task that sleeps for the duration and delete
+    // the entry after the TTL.
     let (i, n) = *self
       .buckets
       .lock()
@@ -73,14 +75,14 @@ where
         if i.elapsed() > TTL {
           *i = Instant::now();
           *n = 1;
-        } else {
+        } else if *n <= self.max_rpm {
           *n += 1;
         }
       })
       .or_insert_with(|| (Instant::now(), 1));
 
     let future = self.inner.call(request);
-    let is_rate_limited = n >= self.max_rpm;
+    let is_rate_limited = n > self.max_rpm;
     Box::pin(async move {
       if is_rate_limited {
         let retry_after_secs = TTL.as_secs() - i.elapsed().as_secs();
