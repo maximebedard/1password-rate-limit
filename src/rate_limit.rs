@@ -85,7 +85,7 @@ where
     let is_rate_limited = n > self.max_rpm;
     Box::pin(async move {
       if is_rate_limited {
-        let retry_after_secs = TTL.as_secs() - i.elapsed().as_secs();
+        let retry_after_secs = TTL.as_secs().checked_sub(i.elapsed().as_secs()).unwrap_or(0);
 
         println!("{} is rate limited for {}s", api_token, retry_after_secs);
 
