@@ -61,30 +61,13 @@ where
       .expect("rate limit must be used in combination with the token auth middleware")
       .clone();
 
-    // TODO: add garbage collection for expired values to prevent leaking memory.
-    // A naive implementation of this garbage collection routine could be to spawn
-    // a task that scans through the entries and remove all the entries where i.elapsed() > TTL.
-    // Another implementation to avoid scans could be to enqueue a task that sleeps for the duration and delete
-    // the entry after the TTL.
-    let (i, n) = *self
-      .buckets
-      .lock()
-      .expect("mutex is poised")
-      .entry(api_token.clone())
-      .and_modify(|(i, n)| {
-        if i.elapsed() > TTL {
-          *i = Instant::now();
-          *n = 1;
-        } else if *n <= self.max_rpm {
-          *n += 1;
-        }
-      })
-      .or_insert_with(|| (Instant::now(), 1));
+    let (i, n) = self.incr(&api_token);
+    let max_rpm = self.max_rpm;
 
     let future = self.inner.call(request);
-    let is_rate_limited = n > self.max_rpm;
+
     Box::pin(async move {
-      if is_rate_limited {
+      if n > max_rpm {
         let retry_after_secs = TTL.as_secs().checked_sub(i.elapsed().as_secs()).unwrap_or(0);
 
         println!("{} is rate limited for {}s", api_token, retry_after_secs);
@@ -95,5 +78,34 @@ where
       }
       future.await
     })
+  }
+}
+
+impl<S> RateLimitMiddleware<S> {
+  fn incr(&self, api_token: &ApiToken) -> (Instant, u32) {
+    let mut buckets = self.buckets.lock().expect("mutex is poised");
+    match buckets.get_mut(api_token) {
+      Some((i, n)) if *n <= self.max_rpm => {
+        *n += 1;
+        (*i, *n)
+      }
+      Some(v) => *v,
+      None => {
+        let i = Instant::now();
+        let n = 1_u32;
+        self.expire(api_token);
+        buckets.insert(api_token.clone(), (i.clone(), n.clone()));
+        (i, n)
+      }
+    }
+  }
+
+  fn expire(&self, api_token: &ApiToken) {
+    let buckets = self.buckets.clone();
+    let api_token = api_token.clone();
+    tokio::task::spawn(async move {
+      tokio::time::sleep(TTL).await;
+      buckets.lock().expect("mutex is poised").remove(&api_token);
+    });
   }
 }
