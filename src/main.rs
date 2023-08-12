@@ -53,6 +53,9 @@ async fn main() {
   println!("listening on [::]:3000");
   axum::Server::bind(&"[::]:3000".parse().expect("failed to parse socket address"))
     .serve(app.into_make_service())
+    .with_graceful_shutdown(async {
+      tokio::signal::ctrl_c().await.ok();
+    })
     .await
     .expect("failed to start server");
 }

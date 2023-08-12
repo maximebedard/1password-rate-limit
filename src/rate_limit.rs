@@ -61,40 +61,35 @@ where
       .expect("rate limit must be used in combination with the token auth middleware")
       .clone();
 
-    let (i, n) = self.incr(&api_token);
-    let max_rpm = self.max_rpm;
+    let (i, n) = self.decrement(&api_token);
 
-    let future = self.inner.call(request);
+    if n == 0 {
+      let retry_after_secs = TTL.as_secs().saturating_sub(i.elapsed().as_secs());
 
-    Box::pin(async move {
-      if n > max_rpm {
-        let retry_after_secs = TTL.as_secs().checked_sub(i.elapsed().as_secs()).unwrap_or(0);
+      println!("{} is rate limited for {}s", api_token, retry_after_secs);
 
-        println!("{} is rate limited for {}s", api_token, retry_after_secs);
+      let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
+      response.headers_mut().append("Retry-After", retry_after_secs.into());
+      return Box::pin(async move { Ok(response) });
+    }
 
-        let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
-        response.headers_mut().append("Retry-After", retry_after_secs.into());
-        return Ok(response);
-      }
-      future.await
-    })
+    Box::pin(self.inner.call(request))
   }
 }
 
 impl<S> RateLimitMiddleware<S> {
-  fn incr(&self, api_token: &ApiToken) -> (Instant, u32) {
+  fn decrement(&self, api_token: &ApiToken) -> (Instant, u32) {
     let mut buckets = self.buckets.lock().expect("mutex is poised");
     match buckets.get_mut(api_token) {
-      Some((i, n)) if *n <= self.max_rpm => {
-        *n += 1;
+      Some((i, n)) => {
+        *n = n.saturating_sub(1);
         (*i, *n)
       }
-      Some(v) => *v,
       None => {
         let i = Instant::now();
-        let n = 1_u32;
+        let n = self.max_rpm;
         self.expire(api_token);
-        buckets.insert(api_token.clone(), (i.clone(), n.clone()));
+        buckets.insert(api_token.clone(), (i, n));
         (i, n)
       }
     }
@@ -104,8 +99,12 @@ impl<S> RateLimitMiddleware<S> {
     let buckets = self.buckets.clone();
     let api_token = api_token.clone();
     tokio::task::spawn(async move {
-      tokio::time::sleep(TTL).await;
-      buckets.lock().expect("mutex is poised").remove(&api_token);
+      tokio::select! {
+        _ = tokio::signal::ctrl_c() => return,
+        _ = tokio::time::sleep(TTL) => {
+          buckets.lock().expect("mutex is poised").remove(&api_token);
+        },
+      }
     });
   }
 }
