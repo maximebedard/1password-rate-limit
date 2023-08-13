@@ -9,3 +9,4 @@ edition = "2021"
 axum =  { version = "0.6", features = ["tokio", "headers"] }
 tokio = { version = "1.29", features = ["full"] }
 tower = "0.4.13"
+pin-project = "1"

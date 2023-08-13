@@ -48,10 +48,10 @@ where
 {
   type Response = S::Response;
   type Error = S::Error;
-  type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
+  type Future = RateLimitFuture<S::Future>;
 
   fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-    self.inner.poll_ready(cx)
+    self.inner.poll_ready(cx).map_err(Into::into)
   }
 
   fn call(&mut self, request: Request<Body>) -> Self::Future {
@@ -64,16 +64,10 @@ where
     let (i, n) = self.decrement(&api_token);
 
     if n == 0 {
-      let retry_after_secs = TTL.as_secs().saturating_sub(i.elapsed().as_secs());
-
-      println!("{} is rate limited for {}s", api_token, retry_after_secs);
-
-      let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
-      response.headers_mut().append("Retry-After", retry_after_secs.into());
-      return Box::pin(async move { Ok(response) });
+      return RateLimitFuture::RateLimited(i);
     }
 
-    Box::pin(self.inner.call(request))
+    return RateLimitFuture::Next(self.inner.call(request));
   }
 }
 
@@ -106,5 +100,30 @@ impl<S> RateLimitMiddleware<S> {
         },
       }
     });
+  }
+}
+
+#[pin_project::pin_project(project=RateLimitFutureProjection)]
+pub enum RateLimitFuture<Fut> {
+  RateLimited(Instant),
+  Next(#[pin] Fut),
+}
+
+impl<F, E> Future for RateLimitFuture<F>
+where
+  F: Future<Output = Result<Response, E>>,
+{
+  type Output = Result<Response, E>;
+
+  fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    match self.project() {
+      RateLimitFutureProjection::RateLimited(i) => {
+        let retry_after_secs = TTL.as_secs().saturating_sub(i.elapsed().as_secs());
+        let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
+        response.headers_mut().append("Retry-After", retry_after_secs.into());
+        Poll::Ready(Ok(response.into()))
+      }
+      RateLimitFutureProjection::Next(next) => next.poll(cx).map_err(Into::into),
+    }
   }
 }
