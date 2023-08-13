@@ -67,7 +67,7 @@ where
       return RateLimitFuture::RateLimited(i);
     }
 
-    return RateLimitFuture::Next(self.inner.call(request));
+    RateLimitFuture::Next(self.inner.call(request))
   }
 }
 
@@ -94,7 +94,7 @@ impl<S> RateLimitMiddleware<S> {
     let api_token = api_token.clone();
     tokio::task::spawn(async move {
       tokio::select! {
-        _ = tokio::signal::ctrl_c() => return,
+        _ = tokio::signal::ctrl_c() => (),
         _ = tokio::time::sleep(TTL) => {
           buckets.lock().expect("mutex is poised").remove(&api_token);
         },
@@ -121,7 +121,7 @@ where
         let retry_after_secs = TTL.as_secs().saturating_sub(i.elapsed().as_secs());
         let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
         response.headers_mut().append("Retry-After", retry_after_secs.into());
-        Poll::Ready(Ok(response.into()))
+        Poll::Ready(Ok(response))
       }
       RateLimitFutureProjection::Next(next) => next.poll(cx).map_err(Into::into),
     }

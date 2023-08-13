@@ -63,17 +63,17 @@ async fn main() {
 async fn create_vault() -> impl IntoResponse {
   println!("create_vault => 200 OK");
   // Return 200 OK
-  ()
+  
 }
 
 async fn list_vault_items() -> impl IntoResponse {
   println!("list_vault_items => 200 OK");
   // Return 200 OK
-  ()
+  
 }
 
 async fn create_vault_item(Path(_id): Path<u64>) -> impl IntoResponse {
   println!("create_vault_item => 200 OK");
   // Return 200 OK
-  ()
+  
 }
